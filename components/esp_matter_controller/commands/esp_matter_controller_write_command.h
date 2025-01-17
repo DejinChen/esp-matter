@@ -133,9 +133,9 @@ esp_err_t send_write_attr_command(uint64_t node_id, uint16_t endpoint_id, uint32
 /** Send write attribute command to multiple attribute paths
  *
  * @param[in] node_id Remote NodeId
- * @param[in] endpoint_ids EndpointIds
- * @param[in] cluster_ids ClusterIds
- * @param[in] attribute_ids AttributeIds
+ * @param[in] endpoint_ids EndpointId array of the multiple write paths
+ * @param[in] cluster_ids ClusterId array of the multiple write paths
+ * @param[in] attribute_ids AttributeId array of the multiple write paths
  * @param[in] attr_val_json_str Attribute value string with JSON format
  *            (https://docs.espressif.com/projects/esp-matter/en/latest/esp32/developing.html#write-attribute-commands)
  * @param[in] timed_write_timeout_ms Timeout in millisecond for timed-write attributes

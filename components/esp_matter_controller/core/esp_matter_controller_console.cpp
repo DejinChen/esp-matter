@@ -420,19 +420,22 @@ static esp_err_t controller_invoke_command_handler(int argc, char **argv)
     }
 
     uint64_t node_id = string_to_uint64(argv[0]);
-    uint16_t endpoint_id = string_to_uint16(argv[1]);
-    uint32_t cluster_id = string_to_uint32(argv[2]);
-    uint32_t command_id = string_to_uint32(argv[3]);
+    ScopedMemoryBufferWithSize<uint16_t> endpoint_ids;
+    ScopedMemoryBufferWithSize<uint32_t> cluster_ids;
+    ScopedMemoryBufferWithSize<uint32_t> command_ids;
+    ESP_RETURN_ON_ERROR(string_to_uint16_array(argv[1], endpoint_ids), TAG, "Failed to parse endpoint IDs");
+    ESP_RETURN_ON_ERROR(string_to_uint32_array(argv[2], cluster_ids), TAG, "Failed to parse cluster IDs");
+    ESP_RETURN_ON_ERROR(string_to_uint32_array(argv[3], command_ids), TAG, "Failed to parse command IDs");
 
     if (argc > 5) {
         uint16_t timed_invoke_timeout_ms = string_to_uint16(argv[5]);
         if (timed_invoke_timeout_ms > 0) {
-            return controller::send_invoke_cluster_command(node_id, endpoint_id, cluster_id, command_id, argv[4],
+            return controller::send_invoke_cluster_command(node_id, endpoint_ids, cluster_ids, command_ids, argv[4],
                                                            chip::MakeOptional(timed_invoke_timeout_ms));
         }
     }
 
-    return controller::send_invoke_cluster_command(node_id, endpoint_id, cluster_id, command_id,
+    return controller::send_invoke_cluster_command(node_id, endpoint_ids, cluster_ids, command_ids,
                                                    argc > 4 ? argv[4] : NULL);
 }
 

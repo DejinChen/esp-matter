@@ -82,9 +82,17 @@ private:
 class multiple_write_encodable_type
 {
 public:
-    multiple_write_encodable_type(const char *json_str)
+    multiple_write_encodable_type(
+        const char *json_str,
+        custom_encodable_type::interaction_type usage = custom_encodable_type::interaction_type::k_write_attr)
     {
-        json = cJSON_Parse(json_str);
+        if (json_str) {
+            json = cJSON_Parse(json_str);
+        } else {
+            if (usage == custom_encodable_type::interaction_type::k_invoke_cmd) {
+                json = cJSON_Parse("[{}]");
+            }
+        }
     }
 
     ~multiple_write_encodable_type() { cJSON_Delete(json); }
@@ -117,6 +125,120 @@ private:
  * They can be used for all the commands of all the clusters, including the custom clusters.
  */
 namespace invoke {
+
+struct CommandPathParamsDefaultConstruct : public CommandPathParams {
+    CommandPathParamsDefaultConstruct()
+        : CommandPathParams(0, 0, 0, 0, chip::app::CommandPathFlags::kEndpointIdValid)
+    {
+    }
+    CommandPathParamsDefaultConstruct(chip::EndpointId aEndpointId, chip::GroupId aGroupId, chip::ClusterId aClusterId,
+                                      chip::CommandId aCommandId,
+                                      const chip::BitFlags<chip::app::CommandPathFlags> &aFlags)
+        : CommandPathParams(aEndpointId, aGroupId, aClusterId, aCommandId, aFlags)
+    {
+    }
+    CommandPathParamsDefaultConstruct(uint16_t aId, chip::ClusterId aClusterId, chip::CommandId aCommandId,
+                                      const chip::BitFlags<chip::app::CommandPathFlags> &aFlags)
+        : CommandPathParams(aId, aClusterId, aCommandId, aFlags)
+    {
+    }
+};
+
+class custom_command_extendable_callback final : public chip::app::CommandSender::ExtendableCallback {
+public:
+    using on_success_callback_t =
+        std::function<void(void *, const ConcreteCommandPath &, const StatusIB &, TLVReader *)>;
+    using on_error_callback_t = std::function<void(void *, CHIP_ERROR error)>;
+    using on_done_callback_t = std::function<void(void *, CommandSender *command_sender)>;
+
+    custom_command_extendable_callback(void *ctx, on_success_callback_t on_success, on_error_callback_t on_error,
+                                       on_done_callback_t on_done = {})
+        : on_success_cb(on_success)
+        , on_error_cb(on_error)
+        , on_done_cb(on_done)
+        , context(ctx)
+    {
+    }
+    void set_on_done_callback(on_done_callback_t on_done) { on_done_cb = on_done; }
+
+private:
+    void OnResponse(CommandSender *apCommandSender, const CommandSender::ResponseData &aResponseData) override
+    {
+        ChipLogError(DeviceLayer, "%s:%d error:%s data:%p", __FILE__, __LINE__,
+                     aResponseData.statusIB.ToChipError().AsString(), aResponseData.data);
+        // CHIP_ERROR err = CHIP_NO_ERROR;
+        // uint8_t buffer[CHIP_CONFIG_DEFAULT_UDP_MTU_SIZE];
+        // uint32_t size = 0;
+        // // When the apData is nullptr, means we did not receive a valid attribute data from server, status will be
+        // some error
+        // // status.
+        // if (aResponseData.data != nullptr)
+        // {
+        //     // Python need to read from full TLV data the TLVReader may contain some unclean states.
+        //     chip::TLV::TLVWriter writer;
+        //     writer.Init(buffer);
+        //     err = writer.CopyContainer(chip::TLV::AnonymousTag(), *aResponseData.data);
+        //     if (err != CHIP_NO_ERROR)
+        //     {
+        //         CommandSender::ErrorData errorData = { err };
+        //         this->OnError(apCommandSender, errorData);
+        //         return;
+        //     }
+        //     size = writer.GetLengthWritten();
+        // }
+
+        // const chip::app::StatusIB & statusIB = aResponseData.statusIB;
+
+        // if (!mIsBatchedCommands && !statusIB.IsSuccess())
+        // {
+        //     CommandSender::ErrorData errorData = { statusIB.ToChipError() };
+        //     this->OnError(apCommandSender, errorData);
+        //     return;
+        // }
+
+        // if (err != CHIP_NO_ERROR)
+        // {
+        //     CommandSender::ErrorData errorData = { err };
+        //     this->OnError(apCommandSender, errorData);
+        //     return;
+        // }
+
+        // chip::CommandRef commandRef = aResponseData.commandRef.ValueOr(0);
+        // size_t index                = 0;
+        // err                         = GetIndexFrocommandRef(commandRef, index);
+        // if (err != CHIP_NO_ERROR && mIsBatchedCommands)
+        // {
+        //     CommandSender::ErrorData errorData = { err };
+        //     this->OnError(apCommandSender, errorData);
+        //     return;
+        // }
+    }
+    void OnNoResponse(CommandSender *commandSender, const CommandSender::NoResponseData &aNoResponseData) override
+    {
+        ChipLogError(DeviceLayer, "%s:%d OnNoResponse", __FILE__, __LINE__);
+    }
+
+    void OnError(const CommandSender *apCommandSender, const CommandSender::ErrorData &aErrorData) override
+    {
+        CHIP_ERROR protocolError = aErrorData.error;
+        StatusIB status(protocolError);
+        ChipLogError(DeviceLayer, "%s:%d OnError:%s", __FILE__, __LINE__, protocolError.AsString());
+    }
+
+    void OnDone(CommandSender *command_sender) override
+    {
+        ChipLogError(DeviceLayer, "%s:%d OnDone", __FILE__, __LINE__);
+        if (on_done_cb) {
+            on_done_cb(context, command_sender);
+        }
+    }
+
+    on_success_callback_t on_success_cb;
+    on_error_callback_t on_error_cb;
+    on_done_callback_t on_done_cb;
+    bool called_callback = false;
+    void *context;
+};
 
 class custom_command_callback final : public chip::app::CommandSender::Callback {
 public:
@@ -192,6 +314,13 @@ esp_err_t send_request(void *ctx, peer_device_t *remote_device, const CommandPat
                        const Optional<uint16_t> &timed_invoke_timeout_ms,
                        const Optional<Timeout> &response_timeout = chip::NullOptional);
 
+esp_err_t send_request(void *ctx, peer_device_t *remote_device,
+                       ScopedMemoryBufferWithSize<CommandPathParamsDefaultConstruct> &command_paths,
+                       multiple_write_encodable_type &json_encodable,
+                       custom_command_callback::on_success_callback_t on_success,
+                       custom_command_callback::on_error_callback_t on_error,
+                       const Optional<uint16_t> &timed_invoke_timeout_ms,
+                       const Optional<Timeout> &response_timeout = chip::NullOptional);
 
 esp_err_t send_group_request(const uint8_t fabric_index, const CommandPathParams &command_path,
                              const chip::app::DataModel::EncodableToTLV &encodable);

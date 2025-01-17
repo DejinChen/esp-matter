@@ -225,6 +225,74 @@ esp_err_t send_group_request(const uint8_t fabric_index, const CommandPathParams
     return send_group_request(fabric_index, command_path, type);
 }
 
+esp_err_t send_request(void *ctx, peer_device_t *remote_device,
+                       ScopedMemoryBufferWithSize<CommandPathParamsDefaultConstruct> &command_paths,
+                       multiple_write_encodable_type &json_encodable,
+                       custom_command_callback::on_success_callback_t on_success,
+                       custom_command_callback::on_error_callback_t on_error,
+                       const Optional<uint16_t> &timed_invoke_timeout_ms, const Optional<Timeout> &response_timeout)
+{
+    VerifyOrReturnError(remote_device->GetSecureSession().HasValue() &&
+                            !remote_device->GetSecureSession().Value()->IsGroupSession(),
+                        ESP_ERR_INVALID_ARG, ESP_LOGE(TAG, "Invalid Session Type"));
+    VerifyOrReturnError(
+        json_encodable.GetJsonArraySize() == command_paths.AllocatedSize() ||
+            (json_encodable.GetJsonArraySize() == 0 && command_paths.AllocatedSize() == 1),
+        ESP_ERR_INVALID_ARG,
+        ESP_LOGE(TAG, "The command_values array length should be the same as the command_paths array length"));
+    auto decoder = chip::Platform::MakeUnique<custom_command_extendable_callback>(ctx, on_success, on_error);
+    VerifyOrReturnError(decoder != nullptr, ESP_ERR_NO_MEM, ESP_LOGE(TAG, "No memory for command callback"));
+
+    auto on_done = [raw_decoder_ptr = decoder.get()](void *context, CommandSender *command_sender) {
+        chip::Platform::Delete(command_sender);
+        chip::Platform::Delete(raw_decoder_ptr);
+    };
+    decoder->set_on_done_callback(on_done);
+
+    auto command_sender = chip::Platform::MakeUnique<CommandSender>(decoder.get(), remote_device->GetExchangeManager(),
+                                                                    timed_invoke_timeout_ms.HasValue());
+    VerifyOrReturnError(command_sender != nullptr, ESP_ERR_NO_MEM, ESP_LOGE(TAG, "No memory for command sender"));
+    chip::app::CommandSender::AddRequestDataParameters add_request_data_params(timed_invoke_timeout_ms);
+    CommandSender::ConfigParameters config;
+    config.SetRemoteMaxPathsPerInvoke(
+        remote_device->GetSecureSession().Value()->GetRemoteSessionParameters().GetMaxPathsPerInvoke());
+    command_sender->SetCommandSenderConfig(config);
+    for (size_t i = 0; i < command_paths.AllocatedSize(); ++i) {
+        VerifyOrReturnError(!command_paths[i].mFlags.Has(chip::app::CommandPathFlags::kGroupIdValid),
+                            ESP_ERR_INVALID_ARG, ESP_LOGE(TAG, "Invalid CommandPathFlags"));
+        CommandSender::PrepareCommandParameters prepareCommandParams;
+        prepareCommandParams.commandRef.SetValue(static_cast<uint16_t>(i));
+        command_sender->PrepareCommand(command_paths[i], prepareCommandParams);
+        auto command_writer = command_sender->GetCommandDataIBTLVWriter();
+        VerifyOrReturnError(command_writer != nullptr, ESP_ERR_INVALID_STATE,
+                            ESP_LOGE(TAG, "Get the writer of command sender failed"));
+        chip::Platform::ScopedMemoryBuffer<uint8_t> encoded_buf;
+        encoded_buf.Alloc(chip::kMaxAppMessageLen);
+        VerifyOrReturnError((encoded_buf.Get()), ESP_ERR_NO_MEM,
+                            ESP_LOGE(TAG, "Failed to alloc memory for encoded_buf"));
+        TLVWriter writer;
+        writer.Init(encoded_buf.Get(), chip::kMaxAppMessageLen);
+        VerifyOrReturnError(json_encodable.EncodeTo(writer, chip::TLV::AnonymousTag(), i) == CHIP_NO_ERROR, ESP_FAIL,
+                            ESP_LOGE(TAG, "Failed to encode command value"));
+        VerifyOrReturnError(writer.Finalize() == CHIP_NO_ERROR, ESP_FAIL,
+                            ESP_LOGE(TAG, "Failed to finalize TLV writer"));
+        TLVReader reader;
+        reader.Init(encoded_buf.Get(), writer.GetLengthWritten());
+        VerifyOrReturnError(reader.Next() == CHIP_NO_ERROR, ESP_FAIL, ESP_LOGE(TAG, "Failed to read next"));
+        command_writer->CopyContainer(chip::TLV::ContextTag(chip::app::CommandDataIB::Tag::kFields), reader);
+        CommandSender::FinishCommandParameters finishCommandParams(timed_invoke_timeout_ms);
+        finishCommandParams.commandRef = prepareCommandParams.commandRef;
+        command_sender->FinishCommand(finishCommandParams);
+    }
+
+    VerifyOrReturnError(command_sender->SendCommandRequest(remote_device->GetSecureSession().Value(),
+                                                           response_timeout) == CHIP_NO_ERROR,
+                        ESP_FAIL, ESP_LOGE(TAG, "Failed to send command request"));
+    (void)decoder.release();
+    (void)command_sender.release();
+    return ESP_OK;
+}
+
 esp_err_t send_request(void *ctx, peer_device_t *remote_device, const CommandPathParams &command_path,
                        const EncodableToTLV &encodable, custom_command_callback::on_success_callback_t on_success,
                        custom_command_callback::on_error_callback_t on_error,

@@ -43,7 +43,7 @@ esp_err_t decode_command_response(const ConcreteCommandPath &command_path, TLVRe
     ESP_RETURN_ON_FALSE(reader, ESP_ERR_INVALID_ARG, TAG, "reader cannot be NULL");
     ESP_RETURN_ON_FALSE(command_path.mClusterId == CommandResponseObjectT::GetClusterId() &&
                             command_path.mCommandId == CommandResponseObjectT::GetCommandId(),
-                            ESP_ERR_INVALID_ARG, TAG, "Wrong command to decode");
+                        ESP_ERR_INVALID_ARG, TAG, "Wrong command to decode");
     DataModelLogger::LogCommand(command_path, reader);
     return ESP_OK;
 }
@@ -149,7 +149,7 @@ void cluster_command::on_device_connected_fcn(void *context, ExchangeManager &ex
     chip::OperationalDeviceProxy device_proxy(&exchangeMgr, sessionHandle);
     chip::app::CommandPathParams command_path = {cmd->m_endpoint_id, 0, cmd->m_cluster_id, cmd->m_command_id,
                                                  chip::app::CommandPathFlags::kEndpointIdValid};
-    interaction::invoke::send_request(context, &device_proxy, command_path, cmd->m_command_data_field,
+    interaction::invoke::send_request(context, &device_proxy, cmd->m_command_paths, cmd->m_command_vals,
                                       cmd->on_success_cb, cmd->on_error_cb, cmd->m_timed_invoke_timeout_ms);
     chip::Platform::Delete(cmd);
     return;
@@ -254,6 +254,38 @@ esp_err_t send_invoke_cluster_command(uint64_t destination_id, uint16_t endpoint
                                       chip::Optional<uint16_t> timed_invoke_timeout_ms)
 {
     cluster_command *cmd = chip::Platform::New<cluster_command>(destination_id, endpoint_id, cluster_id, command_id,
+                                                                command_data_field, timed_invoke_timeout_ms);
+    if (!cmd) {
+        ESP_LOGE(TAG, "Failed to alloc memory for cluster_command");
+        return ESP_ERR_NO_MEM;
+    }
+
+    return cmd->send_command();
+}
+
+esp_err_t send_invoke_cluster_command(uint64_t destination_id, ScopedMemoryBufferWithSize<uint16_t> &endpoint_ids,
+                                      ScopedMemoryBufferWithSize<uint32_t> &cluster_ids,
+                                      ScopedMemoryBufferWithSize<uint32_t> &command_ids, const char *command_data_field,
+                                      chip::Optional<uint16_t> timed_invoke_timeout_ms)
+{
+    if (endpoint_ids.AllocatedSize() != cluster_ids.AllocatedSize() ||
+        endpoint_ids.AllocatedSize() != command_ids.AllocatedSize()) {
+        ESP_LOGE(TAG,
+                 "The endpoint_id array length should be the same as the cluster_ids array length"
+                 "and the command_ids array length");
+        return ESP_ERR_INVALID_ARG;
+    }
+    ScopedMemoryBufferWithSize<CommandPathParamsDefaultConstruct> command_paths;
+    command_paths.Alloc(endpoint_ids.AllocatedSize());
+    if (!command_paths.Get()) {
+        ESP_LOGE(TAG, "Failed to alloc memory for command paths");
+        return ESP_ERR_NO_MEM;
+    }
+    for (size_t i = 0; i < command_paths.AllocatedSize(); ++i) {
+        command_paths[i] = CommandPathParamsDefaultConstruct(endpoint_ids[i], cluster_ids[i], command_ids[i],
+                                                             chip::app::CommandPathFlags::kEndpointIdValid);
+    }
+    cluster_command *cmd = chip::Platform::New<cluster_command>(destination_id, std::move(command_paths),
                                                                 command_data_field, timed_invoke_timeout_ms);
     if (!cmd) {
         ESP_LOGE(TAG, "Failed to alloc memory for cluster_command");
